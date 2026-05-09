@@ -1,0 +1,729 @@
+---
+title: "Exploratory and Inferential Analysis of Compliance Behaviour Across Nigerian Tax Obligations"
+author: "Lilian Obadan"
+date: today
+format:
+  html:
+    theme: flatly
+    toc: true
+    code-fold: true
+    self-contained: true
+---
+
+```{=html}
+<style>
+:root {
+  --navy:       #1a3a5c;
+  --navy-dark:  #0d2b4e;
+  --navy-mid:   #1e5080;
+  --navy-light: #eaf1f8;
+  --gold:       #f0a500;
+}
+body { font-family: Calibri, sans-serif; color: #1c2340; background-color: #f7f9fc; line-height: 1.7; }
+.quarto-title-block {
+  background: linear-gradient(135deg, #0d2b4e 0%, #1a3a5c 55%, #1e5080 100%);
+  color: white; padding: 2.5rem 3rem; border-radius: 0 0 16px 16px; margin-bottom: 2rem;
+}
+.quarto-title { color: white !important; font-size: 1.6rem; }
+.quarto-title-meta { color: #a8c6e8 !important; }
+#TOC { background-color: #1a3a5c; padding: 14px 16px; border-radius: 10px; color: white; font-size: 13px; }
+#TOC a { color: #a8c8e8 !important; text-decoration: none; }
+#TOC a:hover { color: #f0a500 !important; }
+.toc-title { color: #f0a500 !important; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+h1 { color: #1a3a5c; font-size: 1.45rem; }
+h2 { color: #1a3a5c; border-left: 5px solid #f0a500; padding-left: 10px; margin-top: 2rem; font-size: 1.2rem; }
+h3 { color: #1e5080; font-size: 1.05rem; margin-top: 1.4rem; }
+thead tr { background-color: #1a3a5c !important; color: white !important; }
+tbody tr:nth-child(even) { background-color: #eaf1f8; }
+.callout-note    { border-left-color: #1a3a5c !important; }
+.callout-tip     { border-left-color: #1b5e20 !important; }
+.callout-warning { border-left-color: #f0a500 !important; }
+.callout-important { border-left-color: #b71c1c !important; }
+pre { background-color: #f0f5fb !important; border-left: 4px solid #1a3a5c; border-radius: 6px; }
+hr { border: none; height: 2px; background: linear-gradient(to right, #f0a500, transparent); margin: 2rem 0; }
+</style>
+```
+
+```{r setup, include=FALSE}
+# ── Reproducibility ────────────────────────────────────────────────────────────
+set.seed(2025)
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.align = "center", out.width = "100%", fig.height = 5
+)
+
+# ── Packages ───────────────────────────────────────────────────────────────────
+library(tidyverse)
+library(skimr)
+library(janitor)
+library(scales)
+library(ggcorrplot)
+library(broom)
+library(kableExtra)
+library(car)
+library(lmtest)
+library(rstatix)
+
+# ── CRITICAL: Fix namespace conflicts ──────────────────────────────────────────
+# car loads MASS, which masks dplyr::select; rstatix masks dplyr::filter.
+# These two lines force dplyr's versions to win.
+select <- dplyr::select
+filter <- dplyr::filter
+
+# ── Colours ────────────────────────────────────────────────────────────────────
+NAVY  <- "#1a3a5c"
+GOLD  <- "#f0a500"
+LIGHT <- "#eaf1f8"
+RED   <- "#b71c1c"
+
+pal_tax  <- c("VAT" = "#1a5276", "PAYE" = "#2e86c1",
+              "WHT" = "#f39c12", "CIT"  = "#c0392b")
+pal_comp <- c("On Time" = "#1b5e20", "Delayed" = "#c0392b")
+pal_band <- c("Band 1 < N5B" = "#76b7b2", "Band 2 N5-15B" = "#4e79a7",
+              "Band 3 N15-35B" = "#f28e2b", "Band 4 > N35B" = "#e15759")
+pal_mgmt <- c("Local" = "#1a3a5c", "Foreign" = "#f0a500")
+
+# ── ggplot2 theme ──────────────────────────────────────────────────────────────
+theme_lbs <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) %+replace%
+    theme(
+      plot.title       = element_text(face = "bold", colour = NAVY, size = base_size + 1, margin = margin(b = 5)),
+      plot.subtitle    = element_text(colour = "#5a6282", size = base_size - 1, margin = margin(b = 8)),
+      axis.title       = element_text(face = "bold", colour = NAVY, size = base_size - 1),
+      axis.text        = element_text(colour = "#5a6282", size = base_size - 2),
+      panel.background = element_rect(fill = "#f7f9fc", colour = NA),
+      plot.background  = element_rect(fill = "#f7f9fc", colour = NA),
+      strip.text       = element_text(face = "bold", colour = NAVY),
+      strip.background = element_rect(fill = LIGHT, colour = NA),
+      legend.position  = "bottom"
+    )
+}
+theme_set(theme_lbs())
+```
+
+```{r data-load, include=FALSE}
+# ── Load and clean the dataset ─────────────────────────────────────────────────
+# The CSV must be in the same folder as this .qmd file.
+df_raw <- read.csv("DA_Exam_data_for_upload_new.csv",
+                   stringsAsFactors = FALSE,
+                   strip.white      = TRUE)
+
+df <- df_raw |>
+  clean_names() |>
+  mutate(
+    turnover_ngn  = as.numeric(gsub(",", "", company_turnover)),
+    amount_paid_n = suppressWarnings(as.numeric(gsub(",", "", amount_paid))),
+    date_paid     = as.Date(date_paid, format = "%d/%m/%Y"),
+    filing_period = as.factor(filing_period),
+    revenue_band  = cut(turnover_ngn / 1e9,
+                        breaks = c(0, 5, 15, 35, Inf),
+                        labels = c("Band 1 < N5B", "Band 2 N5-15B",
+                                   "Band 3 N15-35B", "Band 4 > N35B"),
+                        include.lowest = TRUE),
+    compliance_status = factor(
+      if_else(filing_delay_days == 0, "On Time", "Delayed"),
+      levels = c("On Time", "Delayed")),
+    tax_type        = factor(tax_type, levels = c("VAT","PAYE","WHT","CIT")),
+    management_type = factor(management_type, levels = c("Local","Foreign")),
+    industry_sector = factor(industry_sector)
+  )
+```
+
+---
+
+## 1. Executive Summary
+
+This study examines filing compliance behaviour for 104 tax filing observations across 13
+companies with major Nigerian tax obligations including Value Added Tax (VAT),
+Pay-As-You-Earn (PAYE), Withholding Tax (WHT), and Companies Income Tax (CIT). The
+business problem is that companies operating within the same regulatory environment may
+demonstrate inconsistent filing behaviour across different tax obligations, creating
+delayed remittances and reconciliation challenges for the companies and their tax
+consultants, as well as compliance inefficiencies and potential revenue leakage to the
+tax authorities.
+
+Using anonymised operational tax compliance data collected from tax returns filed on
+behalf of clients, this study applies five analytical techniques: Exploratory Data
+Analysis, Data Visualisation, Hypothesis Testing, Correlation Analysis, and Regression
+Analysis. The purpose is to understand whether tax compliance — measured by filing delay
+behaviour — differs across tax types and whether other operational variables such as
+filing frequency, company turnover, amount paid, industry sector, and management type are
+associated with compliance behaviour.
+
+The study finds that compliance varies significantly across tax types. VAT achieves the
+highest level of compliance with a 100% on-time filing rate, attributable to its clear
+monthly filing deadlines, automatic penalties for late filing, and the high frequency of
+filing which builds habitual compliance behaviour. CIT records the highest average delay
+and the most severe individual non-compliance event (677 days), attributable to the
+substantial cash outlay required, the infrequent annual filing cycle, and the complexity
+of tax computation. A major recommendation arising from this study is the introduction of
+monthly filing of estimated CIT payments by all companies, similar to the practice already
+established in the upstream oil and gas sector.
+
+---
+
+## 2. Professional Disclosure
+
+I work as a tax compliance professional within the tax advisory and compliance sector,
+where I am responsible for monitoring filing timelines, reviewing statutory obligations,
+supporting taxpayers, analysing compliance behaviour, and assisting companies in meeting
+their compliance goals. These responsibilities are directly relevant to my day-to-day
+work and form the operational context from which this dataset was drawn. This study is
+directly connected to my professional practice because it uses operational tax filing
+data to examine compliance behaviour across VAT, PAYE, WHT, and CIT obligations.
+
+**Exploratory Data Analysis** is relevant because tax compliance data typically contains
+filing variations, outliers, and distributional patterns that must first be understood
+before any deeper analysis is conducted.
+
+**Data Visualisation** is relevant because tax findings must frequently be communicated
+clearly to clients, management teams, and regulators who are not statisticians.
+
+**Hypothesis Testing** is relevant because it allows me to determine whether observed
+differences in filing delays across tax types are statistically meaningful.
+
+**Correlation Analysis** is relevant because filing delay behaviour may be associated
+with operational variables such as filing frequency, turnover, and amount paid.
+
+**Regression Analysis** is relevant because it estimates the independent contribution of
+each factor to filing delay, enabling targeted, prioritised recommendations.
+
+---
+
+## 3. Data Collection & Sampling
+
+The dataset was collected from anonymised operational tax compliance records relating to
+13 selected companies and their filing behaviour across VAT, PAYE, WHT, and CIT
+obligations. Each observation represents a unique company–tax type–filing period
+combination, yielding 104 records across four filing periods from January 2024 to July 2025.
+
+The sampling method is **purposive sampling**: data was extracted from compliance tracking
+registers maintained in the normal course of professional tax advisory work. All company
+identifiers were anonymised and replaced with codes (Company A through Company M) before
+analysis. No taxpayer identification numbers, personal identifiers, or confidential client
+details are disclosed.
+
+```{r data-shape}
+cat("Rows:", nrow(df), "| Columns:", ncol(df), "\n")
+cat("Missing values per column:\n")
+print(colSums(is.na(df)))
+```
+
+The 104 observations exceed the assessment minimum of 100 and support all five inferential
+techniques applied. The dataset is a census of available filing records for the 13 clients
+under active engagement during the observation period, which maximises completeness but
+limits generalisation to the broader Nigerian corporate taxpayer population.
+
+---
+
+## 4. Data Description
+
+### Variable Dictionary
+
+```{r var-dict, echo=FALSE}
+tibble(
+  Variable    = c("Client","Filing_Delay_Days","Filing_Period","Tax_Type",
+                  "Filing_Frequency","Industry_Sector","Company_Turnover",
+                  "Amount_Paid","Date_Paid","Management_Type",
+                  "compliance_status","revenue_band"),
+  Type        = c("Categorical","Numeric","Categorical","Categorical",
+                  "Numeric","Categorical","Numeric","Numeric",
+                  "Date","Categorical","Derived","Derived"),
+  Description = c(
+    "Anonymised company code (A-M); 13 unique companies",
+    "Days between statutory due date and actual filing; 0 = on time",
+    "Tax filing period; 4 periods covered",
+    "Statutory obligation: VAT, PAYE, WHT, or CIT",
+    "Required filings per year: 12 monthly | 1 annual (CIT)",
+    "Industry: ICT or Oil and Gas",
+    "Annual turnover in Naira",
+    "Amount remitted in Naira; 20 entries are nil",
+    "Date payment was received",
+    "Local or Foreign management",
+    "On Time vs Delayed (binary outcome)",
+    "Four turnover tiers"
+  )
+) |>
+  kbl(booktabs = TRUE, caption = "Table 1 — Variable Dictionary") |>
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white") |>
+  column_spec(1, bold = TRUE)
+```
+
+### Distributional Summary
+
+```{r skim-output}
+df |>
+  dplyr::select(filing_delay_days, turnover_ngn, amount_paid_n,
+                filing_frequency, tax_type, industry_sector,
+                management_type, compliance_status, revenue_band) |>
+  skim()
+```
+
+### Observations by Tax Type
+
+```{r tab-tax, echo=FALSE}
+df |>
+  dplyr::count(tax_type, name = "n") |>
+  dplyr::mutate(`%` = scales::percent(n / sum(n), accuracy = 0.1)) |>
+  dplyr::rename(`Tax Type` = tax_type) |>
+  kbl(booktabs = TRUE, caption = "Table 2a — Observations by Tax Type") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+### Observations by Industry Sector
+
+```{r tab-ind, echo=FALSE}
+df |>
+  dplyr::count(industry_sector, name = "n") |>
+  dplyr::mutate(`%` = scales::percent(n / sum(n), accuracy = 0.1)) |>
+  dplyr::rename(`Industry` = industry_sector) |>
+  kbl(booktabs = TRUE, caption = "Table 2b — Observations by Industry Sector") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+### Observations by Management Type
+
+```{r tab-mgmt, echo=FALSE}
+df |>
+  dplyr::count(management_type, name = "n") |>
+  dplyr::mutate(`%` = scales::percent(n / sum(n), accuracy = 0.1)) |>
+  dplyr::rename(`Management Type` = management_type) |>
+  kbl(booktabs = TRUE, caption = "Table 2c — Observations by Management Type") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+### Observations by Revenue Band
+
+```{r tab-band, echo=FALSE}
+df |>
+  dplyr::count(revenue_band, name = "n") |>
+  dplyr::mutate(`%` = scales::percent(n / sum(n), accuracy = 0.1)) |>
+  dplyr::rename(`Revenue Band` = revenue_band) |>
+  kbl(booktabs = TRUE, caption = "Table 3 — Observations by Revenue Band") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+---
+
+## 5. Exploratory Data Analysis
+
+> **Technique 1 of 5** — Summary statistics, missing-value analysis, outlier detection
+
+::: {.callout-note title="Business Justification"}
+Before any compliance recommendation can be made, the data must be examined for quality
+issues, distributional irregularities, and anomalies. This step mirrors the mandatory
+pre-engagement data review I conduct before submitting client representations to FIRS.
+:::
+
+### 5.1 Summary Statistics
+
+```{r eda-summary, echo=FALSE}
+delay_vec <- df$filing_delay_days
+
+tibble(
+  Statistic = c("N", "Mean", "Median", "Std Dev", "Min",
+                "Q1 (25%)", "Q3 (75%)", "Max",
+                "% On Time (delay = 0)", "Skewness"),
+  Value = c(
+    as.character(length(delay_vec)),
+    format(round(mean(delay_vec), 2), nsmall = 2),
+    as.character(median(delay_vec)),
+    format(round(sd(delay_vec), 2), nsmall = 2),
+    as.character(min(delay_vec)),
+    as.character(quantile(delay_vec, 0.25)),
+    as.character(quantile(delay_vec, 0.75)),
+    as.character(max(delay_vec)),
+    paste0(round(mean(delay_vec == 0) * 100, 1), "%"),
+    format(round(
+      (sum((delay_vec - mean(delay_vec))^3) / length(delay_vec)) /
+        sd(delay_vec)^3, 2), nsmall = 2)
+  )
+) |>
+  kbl(caption = "Table 4 — Descriptive Statistics: Filing_Delay_Days",
+      booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white") |>
+  row_spec(c(2, 9), bold = TRUE)
+```
+
+### 5.2 Filing Delay by Tax Type
+
+```{r eda-by-type, echo=FALSE}
+df |>
+  dplyr::group_by(`Tax Type` = tax_type) |>
+  dplyr::summarise(
+    n              = dplyr::n(),
+    `Mean Delay`   = round(mean(filing_delay_days), 2),
+    `Median Delay` = median(filing_delay_days),
+    `Min`          = min(filing_delay_days),
+    `Max`          = max(filing_delay_days),
+    `% On Time`    = paste0(round(mean(filing_delay_days == 0) * 100, 1), "%"),
+    .groups        = "drop"
+  ) |>
+  kbl(caption = "Table 5 — Filing Delay Summary by Tax Type", booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+### 5.3 Outlier Detection
+
+```{r outliers, echo=FALSE}
+iqr_val   <- IQR(df$filing_delay_days)
+hi_fence  <- quantile(df$filing_delay_days, 0.75) + 1.5 * iqr_val
+
+df_out <- df |>
+  dplyr::filter(filing_delay_days > hi_fence) |>
+  dplyr::select(client, tax_type, filing_period,
+                filing_delay_days, revenue_band, management_type) |>
+  dplyr::arrange(dplyr::desc(filing_delay_days))
+
+cat("IQR upper fence:", hi_fence, "| Outliers flagged:", nrow(df_out), "\n\n")
+
+df_out |>
+  kbl(caption = "Table 6 — Outlier Observations (IQR Method)", booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+::: {.callout-warning title="Data Quality Issues"}
+**Issue 1 — Nil Amount_Paid entries (20 records, 19.2%):** filings with zero remittance,
+representing nil-return obligations. Treated as valid zero values, not missing data.
+
+**Issue 2 — Right-skewed, zero-inflated outcome:** 75% of filings carry no delay; the
+mean of 21.3 days is distorted by extreme CIT outliers.
+
+**Issue 3 — Extreme outlier at 677 days:** One CIT filing — a genuine compliance failure,
+not a data error. Retained in the analysis with appropriate acknowledgement.
+:::
+
+---
+
+## 6. Data Visualisation
+
+> **Technique 2 of 5** — Grammar of graphics, chart selection, storytelling
+
+### Figure 1 — Distribution of Filing Delay Days
+
+```{r fig1, echo=FALSE, fig.height=4.5}
+ggplot(df, aes(x = filing_delay_days)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 28,
+                 fill = NAVY, colour = "white", alpha = 0.85) +
+  geom_density(colour = GOLD, linewidth = 1.2) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(title    = "Figure 1 — Distribution of Filing Delay Days",
+       subtitle = "Zero-inflated and right-skewed; 75% of filings carry no delay",
+       x = "Filing Delay (Days)", y = "Density")
+```
+
+### Figure 2 — Compliance Rate by Tax Type
+
+```{r fig2, echo=FALSE, fig.height=4.5}
+df |>
+  dplyr::count(tax_type, compliance_status) |>
+  dplyr::group_by(tax_type) |>
+  dplyr::mutate(pct = n / sum(n)) |>
+  ggplot(aes(x = tax_type, y = pct, fill = compliance_status)) +
+  geom_col(width = 0.6, colour = "white") +
+  geom_text(aes(label = scales::percent(pct, accuracy = 1)),
+            position = position_stack(vjust = 0.5),
+            colour = "white", size = 3.8, fontface = "bold") +
+  scale_fill_manual(values = pal_comp) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title    = "Figure 2 — On-Time vs Delayed by Tax Type",
+       subtitle = "VAT: 100% on time | CIT: highest delay severity",
+       x = "Tax Type", y = "Proportion of Filings", fill = "Status") +
+  theme(legend.position = "top")
+```
+
+### Figure 3 — Filing Delay Distribution by Tax Type
+
+```{r fig3, echo=FALSE, fig.height=4.5}
+ggplot(df, aes(x = tax_type, y = filing_delay_days, fill = tax_type)) +
+  geom_boxplot(outlier.colour = RED, outlier.size = 2.5,
+               alpha = 0.75, width = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               size = 4, fill = "white") +
+  scale_fill_manual(values = pal_tax) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title    = "Figure 3 — Filing Delay Distribution by Tax Type",
+       subtitle = "Diamond = mean | Box = IQR | Red dots = outliers",
+       x = "Tax Type", y = "Filing Delay (Days)") +
+  guides(fill = "none")
+```
+
+### Figure 4 — Mean Filing Delay by Revenue Band & Management Type
+
+```{r fig4, echo=FALSE, fig.height=5}
+df |>
+  dplyr::group_by(revenue_band, management_type) |>
+  dplyr::summarise(mean_delay = mean(filing_delay_days),
+                   .groups = "drop") |>
+  ggplot(aes(x = revenue_band, y = mean_delay, fill = management_type)) +
+  geom_col(position = "dodge", width = 0.6, colour = "white") +
+  geom_text(aes(label = round(mean_delay, 1)),
+            position = position_dodge(width = 0.6),
+            vjust = -0.4, size = 3.2, colour = NAVY) +
+  scale_fill_manual(values = pal_mgmt) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(title    = "Figure 4 — Mean Filing Delay by Revenue Band & Management Type",
+       subtitle = "Smaller firms record higher average delays",
+       x = "Revenue Band", y = "Mean Delay (Days)", fill = "Management") +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1),
+        legend.position = "top")
+```
+
+### Figure 5 — Proportion Delayed by Revenue Band
+
+```{r fig5, echo=FALSE, fig.height=4.5}
+df |>
+  dplyr::count(revenue_band, compliance_status) |>
+  dplyr::group_by(revenue_band) |>
+  dplyr::mutate(pct = n / sum(n)) |>
+  dplyr::filter(compliance_status == "Delayed") |>
+  ggplot(aes(x = revenue_band, y = pct, fill = revenue_band)) +
+  geom_col(width = 0.6, colour = "white", alpha = 0.88) +
+  geom_text(aes(label = scales::percent(pct, accuracy = 0.1)),
+            vjust = -0.4, size = 3.5, fontface = "bold", colour = NAVY) +
+  scale_fill_manual(values = pal_band) +
+  scale_y_continuous(labels = scales::percent,
+                     expand = expansion(mult = c(0, 0.15))) +
+  labs(title    = "Figure 5 — Proportion of Delayed Filings by Revenue Band",
+       x = "Revenue Band", y = "Proportion Delayed") +
+  guides(fill = "none")
+```
+
+---
+
+## 7. Hypothesis Testing
+
+> **Technique 3 of 5** — ANOVA, chi-squared, post-hoc tests
+
+### 7.1 H1: Does Filing Delay Differ Across Tax Types?
+
+**H₀:** Mean filing delay is the same across all four tax types.
+**H₁:** At least one tax type has a significantly different mean filing delay.
+
+```{r h1-anova}
+anova_model <- aov(filing_delay_days ~ tax_type, data = df)
+summary(anova_model)
+```
+
+```{r h1-kruskal}
+kruskal.test(filing_delay_days ~ tax_type, data = df)
+```
+
+```{r h1-posthoc, echo=FALSE}
+df |>
+  rstatix::dunn_test(filing_delay_days ~ tax_type,
+                     p.adjust.method = "BH") |>
+  dplyr::select(group1, group2, statistic, p.adj, p.adj.signif) |>
+  kbl(caption = "Table 7 — Dunn Post-Hoc Pairwise Comparisons",
+      booktabs = TRUE, digits = 4) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+::: {.callout-tip title="Result — Hypothesis 1"}
+H₀ is **rejected** (p < 0.01). Filing delay differs significantly across tax types.
+Post-hoc tests show that VAT and WHT differ significantly from CIT, confirming the CIT
+compliance gap is structural, not random.
+:::
+
+### 7.2 H2: Is Management Type Associated with Compliance Status?
+
+**H₀:** No association between management type and compliance status.
+**H₁:** Management type and compliance status are associated.
+
+```{r h2-chi}
+ct <- table(df$management_type, df$compliance_status)
+print(ct)
+chi_result <- chisq.test(ct)
+print(chi_result)
+cramers_v <- sqrt(chi_result$statistic / (sum(ct) * (min(dim(ct)) - 1)))
+cat("\nCramer's V:", round(cramers_v, 4), "— negligible effect\n")
+```
+
+::: {.callout-tip title="Result — Hypothesis 2"}
+The chi-squared test fails to reject H₀ (p > 0.05). Management type is **not**
+significantly associated with compliance status. Tax type is a far stronger
+differentiator than ownership structure.
+:::
+
+---
+
+## 8. Correlation Analysis
+
+> **Technique 4 of 5** — Pearson, Spearman; correlation vs causation
+
+```{r corr, echo=FALSE, fig.height=5}
+df_num <- df |>
+  dplyr::select(filing_delay_days, filing_frequency, turnover_ngn, amount_paid_n) |>
+  tidyr::drop_na()
+
+corr_pearson <- cor(df_num, method = "pearson")
+
+ggcorrplot(corr_pearson, method = "square", type = "lower",
+           lab = TRUE, lab_size = 4,
+           colors = c(RED, "white", NAVY),
+           outline.col = "white", ggtheme = theme_lbs(),
+           title = "Figure 6 — Pearson Correlation Heatmap")
+```
+
+```{r corr-spearman, echo=FALSE}
+corr_sp <- cor(df_num, method = "spearman")
+
+corr_sp |>
+  as.data.frame() |>
+  tibble::rownames_to_column("Predictor") |>
+  dplyr::select(Predictor, filing_delay_days) |>
+  dplyr::filter(Predictor != "filing_delay_days") |>
+  dplyr::rename(`Spearman r` = filing_delay_days) |>
+  dplyr::mutate(`Spearman r` = round(`Spearman r`, 4)) |>
+  kbl(caption = "Table 8 — Spearman Correlations with Filing Delay",
+      booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+**Key observations:**
+Filing frequency has the strongest correlation with delay (r ≈ −0.29) — monthly filers
+outperform annual filers. Company turnover and amount paid show only weak relationships
+with delay. Correlation does not imply causation; the relationships reflect structural
+features of the tax system rather than direct causal mechanisms.
+
+---
+
+## 9. Regression Analysis
+
+> **Technique 5 of 5** — OLS regression with diagnostics
+
+```{r regression, echo=FALSE}
+model_ols <- lm(filing_delay_days ~ tax_type + management_type +
+                  industry_sector + turnover_ngn + amount_paid_n,
+                data = df)
+
+broom::tidy(model_ols, conf.int = TRUE) |>
+  dplyr::mutate(across(where(is.numeric), ~ round(., 4)),
+                significant = if_else(p.value < 0.05, "Yes", "No")) |>
+  kbl(caption = "Table 9 — OLS Regression Coefficients", booktabs = TRUE) |>
+  kable_styling(full_width = TRUE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+```{r reg-fit, echo=FALSE}
+broom::glance(model_ols) |>
+  dplyr::select(r.squared, adj.r.squared, sigma, statistic, p.value) |>
+  dplyr::mutate(across(everything(), ~ round(., 4))) |>
+  kbl(caption = "Table 10 — Model Fit Statistics", booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+```{r diagnostics, echo=FALSE, fig.height=6}
+par(mfrow = c(2, 2), bg = "#f7f9fc")
+plot(model_ols, col = NAVY, pch = 20, cex = 0.8)
+par(mfrow = c(1, 1))
+```
+
+```{r vif, echo=FALSE}
+vif_vals <- car::vif(model_ols)
+if (is.matrix(vif_vals)) {
+  vif_df <- data.frame(Predictor = rownames(vif_vals), VIF = round(vif_vals[, 1], 3))
+} else {
+  vif_df <- data.frame(Predictor = names(vif_vals), VIF = round(vif_vals, 3))
+}
+vif_df |>
+  kbl(caption = "Table 11 — Variance Inflation Factors", booktabs = TRUE) |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover")) |>
+  row_spec(0, bold = TRUE, background = NAVY, color = "white")
+```
+
+::: {.callout-tip title="Coefficient Interpretation"}
+PAYE, VAT, and WHT each show significantly fewer delay days than the CIT reference
+category, after controlling for company size and amount paid. The CIT compliance gap is
+not explained by company size or remittance amount — it is an obligation-type effect.
+The model R² indicates the proportion of variation in delay that is explained by these
+predictors. The remaining variation reflects factors not captured here, such as internal
+client capacity, FIRS portal availability, and management attention.
+:::
+
+---
+
+## 10. Integrated Findings
+
+::: {.callout-important title="Single Integrated Finding"}
+Filing compliance failure in this dataset is a concentrated, obligation-type-specific
+problem centred on CIT. It persists independently of company size, management structure,
+and industry sector.
+:::
+
+The five techniques build the conclusion cumulatively:
+
+- **EDA** reveals zero-inflation (75% on time) and extreme CIT outliers.
+- **Visualisation** shows VAT at 100% on time; CIT with the highest severity.
+- **Hypothesis Testing** confirms tax-type differences are statistically significant.
+- **Correlation** identifies filing frequency as the strongest numerical correlate.
+- **Regression** quantifies that PAYE, VAT, and WHT are each associated with substantially
+  fewer delay days than CIT, while company size and amount paid are not significant.
+
+**Recommendation:** Implement a tiered, obligation-specific monitoring protocol — placing
+CIT on a dedicated 90/60/30-day pre-deadline alert schedule, introducing monthly estimated
+CIT payments modelled on upstream oil and gas practice, and applying lighter-touch
+monthly monitoring for VAT and PAYE.
+
+---
+
+## 11. Limitations & Further Work
+
+::: {.callout-warning}
+**Sample scope:** 104 observations across 13 clients within a single advisory portfolio,
+not a random sample of Nigerian taxpayers.
+
+**Cross-sectional structure:** Each client contributes multiple filings; standard errors
+may be understated. A mixed-effects model would be more appropriate.
+
+**Zero-inflation:** Severe zero-inflation violates OLS assumptions. A hurdle model
+combining logistic regression with truncated regression would be more suitable.
+
+**Filing_Frequency collinearity:** Perfectly collinear with Tax_Type (CIT is the only
+annual filer) and was not included as an independent predictor.
+
+**With more data, time, or computing power:** extend the panel to additional years for
+fixed-effects regression; apply a zero-inflated negative binomial model; incorporate FIRS
+penalty data; build a machine-learning classifier to predict next-period non-compliance.
+:::
+
+---
+
+## References
+
+Adi, B. (2026). *AI-powered business analytics: A practical textbook for data-driven
+decision making.* Lagos Business School / markanalytics.online. https://markanalytics.online
+
+R Core Team. (2024). *R: A language and environment for statistical computing.* R
+Foundation for Statistical Computing. https://www.R-project.org/
+
+Wickham, H., et al. (2019). Welcome to the tidyverse. *Journal of Open Source Software,
+4*(43), 1686. https://doi.org/10.21105/joss.01686
+
+Wickham, H. (2016). *ggplot2: Elegant graphics for data analysis.* Springer.
+
+Obadan, L. (2026). *Corporate tax compliance filing records — anonymised client dataset*
+[Dataset]. Compiled from operational compliance tracking registers, Lagos, Nigeria,
+January 2024 to July 2025. Data available on request from the author.
+
+---
+
+## Appendix: AI Usage Statement
+
+Claude (Anthropic) was used to assist with structuring the Quarto document, generating
+initial R code scaffolding, and suggesting appropriate diagnostic approaches. All
+analytical decisions — selection of the outcome variable, choice of statistical tests,
+interpretation of coefficients, and the integrated recommendation — were made
+independently by the author. The dataset was compiled from records within my own
+professional practice, and no data was shared with any AI tool at any stage.
